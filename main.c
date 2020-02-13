@@ -35,18 +35,21 @@ char * OUTPUT_SRC = NULL;
 char * OUTPUT_HDR = NULL;
 char * INCLUDE = NULL;
 char * NAME = NULL;
+char * REDIRECTS[MAX_SCRIPT_LINES] = {0};
 char * SCRIPTS[MAX_SCRIPT_LINES] = {0};
 char * FILES[MAX_SCRIPT_LINES] = {0};
 uint32_t lookupTable[MAX_SCRIPT_LINES * 2] = {0};
 uint32_t tableLength = 0;
 uint32_t fileCount = 0;
 uint32_t scriptCount = 0;
+uint32_t redirectCount = 0;
 char * headerBuf = NULL;
 char * sourceBuf = NULL;
 uint8_t * dataBuf = NULL;
 uint32_t headerIdx = 0;
 uint32_t sourceIdx = 0;
 uint32_t dataIdx = 0;
+uint32_t MAX_FILE_NAME_LENGTH = 0;
 
 void printUsage(void);
 size_t fileSize(FILE * f);
@@ -130,36 +133,58 @@ void printHeaderStart(void) {
     char * data =
             "/* Processed by yaROMFS version " VERSION " */\r\n"
             "#ifndef YAROMFS_H\r\n"
-            "#define YAROMFS_H\r\n"
+            "#define YAROMFS_H\r\n\r\n"
+    
+            "#include <stdint.h>\r\n\r\n"
+    
             "#define YAROMFS_GET  1\r\n"
             "#define YAROMFS_POST 2\r\n"
+            "#define YAROMFS_HANDLE_INVALID NULL\r\n"
             "\r\n"
             "typedef struct {\r\n"
             "    uint8_t * data;\r\n"
             "    int32_t len;\r\n"
             "    int32_t responseCode;\r\n"
+            "    uint8_t gz : 1;\r\n"
             "} _httpResponse;\r\n\r\n"
             "typedef struct {\r\n"
-            "    uint8_t * url;\r\n"
+            "    const uint8_t * contentType;\r\n"
             "    uint32_t hash;\r\n"
             "    const uint8_t * data;\r\n"
             "    uint32_t length;\r\n"
             "    _httpResponse (*script_ptr)(uint8_t * data, uint32_t len);\r\n"
             "    uint8_t method;\r\n"
-            "    uint8_t gz;\r\n"
+            "    uint8_t gz : 1;\r\n"
+            "    uint8_t redirect : 1;\r\n"
             "} _yaROMFSFILE;\r\n\r\n"
-            "const _yaROMFSFILE * yaROMFSfind(uint8_t *url, uint8_t *method);\r\n\r\n"
+            "typedef struct {\r\n"
+            "    const _yaROMFSFILE *file;\r\n"
+            "    uint32_t position;\r\n"
+            "    _httpResponse scriptResponse;\r\n"
+            "} YAROMFSFILE_HANDLE;\r\n\r\n"
+            "const _yaROMFSFILE * yaROMFSfind(uint8_t *url, uint8_t *method);\r\n"
+            "YAROMFSFILE_HANDLE * yaromfs_fopen(uint8_t *url, uint8_t *method, uint8_t *restData, uint32_t length);\r\n"
+            "uint32_t yaromfs_fread(YAROMFSFILE_HANDLE *handle, uint8_t *buf, uint32_t len);\r\n"
+            "uint32_t yaromfs_f_length(YAROMFSFILE_HANDLE *handle);\r\n"
+            "void yaromfs_fclose(YAROMFSFILE_HANDLE *handle);\r\n"
+            "const uint8_t * yaromfs_redirect(YAROMFSFILE_HANDLE *handle);\r\n"
+            "uint32_t yaromfs_is_gz(YAROMFSFILE_HANDLE *handle);\r\n;"
+            "const uint8_t * yaromfs_contentType(YAROMFSFILE_HANDLE *handle);\r\n"
+            "uint32_t yaromfs_postExists(uint8_t *url);\r\n"
+            "uint32_t yaromfs_responseCode(YAROMFSFILE_HANDLE *handle);\r\n\r\n"
             "/* user defined scripts located in source */\r\n";
     writeHeader(data, strlen(data));
 }
 
 void printSourceStart(void) {
-    char buf[1024];
+    char buf[4096];
     sprintf(buf,
             "/* Processed by yaROMFS version %s */\r\n"
+            "/* yaRomfsCore.c must be included  */\r\n"
             "#include <stdint.h>\r\n"
             "#include <ctype.h>\r\n"
             "#include <stddef.h>\r\n"
+            "#include <stdlib.h>\r\n"
             "#include \"%s\"\r\n\r\n"
             "#include \"yaROMFSconfig.h\"\r\n\r\n"
             "extern const uint8_t yaROMFSDAT[];\r\n"
@@ -213,23 +238,38 @@ void printSourceMethods(void) {
 
 void processScripts(void) {
     int i;
+    uint32_t scriptLen;
     char buf[2048];
     for (i = 0; i < scriptCount; i++) {
         char * scriptName = strtok(SCRIPTS[i], " ");
         char * scriptMethod = strtok(NULL, " ");
         char * scriptSrc = strtok(NULL, " ");
+        char * contentType = strtok(NULL, " ");
+        char * maxLength = strtok(NULL, " ");
         sprintf(buf, "extern _httpResponse %s(uint8_t * data, uint32_t len);\r\n", scriptSrc);
         writeHeader(buf, strlen(buf));
         uint32_t hashValue = hash(scriptName, scriptMethod);
         lookupTable[tableLength++] = hashValue;
+        if (contentType == NULL) {
+            contentType = strrchr(scriptName, '.');
+            if (contentType == NULL) {
+                contentType = "NONE";
+            } else {
+                contentType++;
+            }
+        }
         sprintf(buf,
-                "    { .hash = 0x%08X, .url = \"%s\",  .script_ptr = %s, .method = YAROMFS_%s },\r\n"
-                , hashValue, scriptName, scriptSrc, scriptMethod);
+                "    { .hash = 0x%08X, .contentType = \"%s\", .length = %s, .script_ptr = %s, .method = YAROMFS_%s }, /* %s %s */\r\n"
+                , hashValue, contentType, maxLength, scriptSrc, scriptMethod, scriptMethod, scriptName);
         writeSource(buf, strlen(buf));
+        if (strlen(scriptName) > MAX_FILE_NAME_LENGTH) {
+            MAX_FILE_NAME_LENGTH = strlen(scriptName);
+        }
     }
 }
 
 int32_t processFile(char * fileName, char * url) {
+    uint32_t urlLength;
     char buf[1024] = {0};
     FILE * f = fopen(fileName, "rb");
     uint8_t * fileData;
@@ -257,10 +297,19 @@ int32_t processFile(char * fileName, char * url) {
     }
     uint32_t hashValue = hash(url, "GET");
     lookupTable[tableLength++] = hashValue;
+    char * contentType = strrchr(url, '.');
+    if (contentType == NULL) {
+        contentType = "NONE";
+    } else {
+        contentType++;
+    }
     sprintf(buf,
-            "    { .hash = 0x%08X, .url = \"%s\", .data = &yaROMFSDAT[0x%X], .length = 0x%X, .gz = 1 },\r\n",
-            hashValue, url, dataIdx, sz );
+            "    { .hash = 0x%08X, .contentType = \"%s\", .data = &yaROMFSDAT[0x%X], .length = 0x%X, .gz = 1 },/* %s */\r\n",
+            hashValue, contentType, dataIdx, gzip.Len, url);
     writeSource(buf, strlen(buf));
+    if (strlen(url) > MAX_FILE_NAME_LENGTH) {
+        MAX_FILE_NAME_LENGTH = strlen(url);
+    }
     writeData(gzip.UBData, gzip.Len);
     free(fileData);
     gzip_free(&gzip);
@@ -279,7 +328,7 @@ void searchDirectory(char * dirName, char * wildCard) {
             if (is_regular_file(buf)) {
                 if (wildcardcmp(wildCard, buf)) {
                     char * url = &buf[strlen(WEBROOT) + 1];
-                    printf("URL %s\n", url);
+                    printf("URL /%s\n", url);
                     processFile(buf, url);
                 }
             } else if (*dir->d_name != '.' && is_regular_dir(buf)) {
@@ -313,7 +362,7 @@ void processWildCard(char * dirName) {
 
 void processFiles(void) {
     int i;
-    char buf[2048];   
+    char buf[2048];
     for (i = 0; i < fileCount; i++) {
         if (strstr(FILES[i], "*") != NULL) {
             processWildCard(FILES[i]);
@@ -323,6 +372,26 @@ void processFiles(void) {
         }
     }
     //Close out for data serialization following
+    //writeSource("};\r\n\r\n", strlen("};\r\n\r\n"));
+}
+
+void processRedirects(void) {
+    char buf[2048];
+    uint32_t i;
+
+    for (i = 0; i < redirectCount; i++) {
+        char * redirectName = strtok(REDIRECTS[i], " ");
+        char * redirectTo = strtok(NULL, " ");
+        uint32_t hashValue = hash(redirectName, "GET");
+        lookupTable[tableLength++] = hashValue;
+        sprintf(buf,
+                "    { .hash = 0x%08X, .redirect = 1, .contentType = \"%s\" }, /* Redirect %s -> %s*/\r\n"
+                , hashValue, redirectTo, redirectName, redirectTo);
+        writeSource(buf, strlen(buf));
+        if (strlen(redirectName) > MAX_FILE_NAME_LENGTH) {
+            MAX_FILE_NAME_LENGTH = strlen(redirectName);
+        }
+    }
     writeSource("};\r\n\r\n", strlen("};\r\n\r\n"));
 }
 
@@ -372,10 +441,12 @@ int writeToFile(void) {
     FILE * sourceFile = NULL;
     bool writeFlag = false;
     size_t sz;
-    
+
     // Finalize the file
-    writeHeader("\r\n#endif\r\n", strlen("\r\n#endif\r\n"));
-    
+    sz = sprintf(srcName, "#define MAX_FILE_NAME_LENGTH (%i)\r\n", MAX_FILE_NAME_LENGTH + 16);
+    writeHeader(srcName, sz);
+    writeHeader("\r\n\r\n#endif\r\n", strlen("\r\n#endif\r\n"));
+
     strcpy(hdrName, OUTPUT_HDR);
     strcat(hdrName, "/");
     strcat(hdrName, NAME);
@@ -482,159 +553,12 @@ int main(int argc, char** argv) {
     printSourceStart();
     processScripts();
     processFiles();
+    processRedirects();
     printSourceMethods();
     serializeData();
     if (writeToFile()) {
         return (EXIT_FAILURE);
     }
-    //processFiles();
-#if 0
-    strcpy(buf, OUTPUT);
-    strcat(buf, ".h");
-
-    headerFile = fopen(buf, "wb");
-
-    strcpy(buf, OUTPUT);
-    strcat(buf, ".c");
-    sourceFile = fopen(buf, "wb");
-
-    strcpy(buf,
-            "/* Processed by myROMFS version " VERSION " */\r\n"
-            "#ifndef MYROMFS_H\r\n"
-            "#define MYROMFS_H\r\n"
-            "#define MYROMFS_GET  1\r\n"
-            "#define MYROMFS_POST 2\r\n"
-            "\r\n"
-            "typedef struct {\r\n"
-            "    uint8_t * data;\r\n"
-            "    int32_t len;\r\n"
-            "    int32_t responseCode;\r\n"
-            "} _httpResponse;\r\n\r\n"
-            "typedef struct {\r\n"
-            "    uint8_t * url;\r\n"
-            "    uint8_t * data;\r\n"
-            "    uint32_t length;\r\n"
-            "    _httpResponse (script_ptr)(uint8_t * data, uint32_t len);\r\n"
-            "    uint8_t method;\r\n"
-            "    uint8_t gz;\r\n"
-            "} _myROMFSFILE;\r\n\r\n"
-            );
-    fwrite(buf, strlen(buf), 1, headerFile);
-
-    sprintf(buf,
-            "/* Processed by myROMFS version %s */\r\n"
-            "#include <stdint.h>\r\n"
-            "#include \"%s.h\"\r\n\r\n"
-            "static const _myROMFSFILE fileList[] = {\r\n",
-            VERSION, OUTPUT
-            );
-    fwrite(buf, strlen(buf), 1, sourceFile);
-    
-    for (i = 0; i < scriptCount; i++) {
-        char * scriptName = strtok(SCRIPTLIST[i], " ");
-        char * scriptMethod = strtok(NULL, " ");
-        char * scriptSrc = strtok(NULL, " ");
-        fprintf(headerFile, "extern _httpResponse %s(uint8_t * data, uint32_t len);\r\n", scriptSrc);
-        fprintf(sourceFile,
-                "    {.url = \"%s\", .script_ptr = %s, .method = MYROMFS_%s},\r\n"
-                , scriptName, scriptSrc, scriptMethod);
-    }
-
-    for (i = 0; i < fileCount; i++) {
-        if (strstr(FILELIST[i], "*") != NULL) {
-            int searchRoot = strlen(FILELIST[i]);
-            while (searchRoot) {
-                if (FILELIST[i][searchRoot] == '/') {
-                    break;
-                }
-                searchRoot--;
-            }
-            FILELIST[i][searchRoot] = 0;
-            char * wildCard = FILELIST[i][searchRoot + 1];
-            struct dirent *dir;
-            strcpy(buf, WEBROOT);
-            strcat(buf, "/");
-            if (searchRoot > 0) {
-                strcat(buf, FILELIST[i]);
-            }
-            searchDir = opendir(buf);
-            if (searchDir) {
-                while ((dir = readdir(searchDir)) != NULL) {
-                    strcpy(buf, WEBROOT);
-                    strcat(buf, "/");
-                    strcat(buf, dir->d_name);
-                    if (is_regular_file(buf)) {
-                        if (WildCmp("*.js", buf)) {
-                            printf("->>>> %s\n", dir->d_name);
-                        } else {
-                            printf("%s\n", dir->d_name);
-                        }
-
-                    } else {
-                        printf("DIR: %s\n", dir->d_name);
-                    }
-
-                }
-                closedir(searchDir);
-            }
-        } else {
-            //Regular file        
-            strcpy(buf, WEBROOT);
-            strcat(buf, "/");
-            strcat(buf, FILELIST[i]);
-            inputFile = fopen(buf, "rb");
-            if (inputFile == NULL) {
-                printf("Incorrect file params [%s]\r\n", buf);
-                fclose(headerFile);
-                fclose(sourceFile);
-                return (EXIT_FAILURE);
-            }
-            fseek(inputFile, 0L, SEEK_END);
-            sz = ftell(inputFile);
-            rewind(inputFile);
-
-            char * tbuf = malloc(sz);
-            if (fread(tbuf, 1, sz, inputFile) != sz) {
-                printf("Unable to read file [%s]\r\n", buf);
-                fclose(headerFile);
-                fclose(sourceFile);
-                return (EXIT_FAILURE);
-            }
-            fprintf(sourceFile,
-                    "    {.url = \"%s\", .data = &fileData[0x%X], .length = %i, .gz = 1},\r\n",
-                    FILELIST[i], contentSize, sz);
-
-            outputContents = realloc(outputContents, contentSize + sz);
-            memcpy(outputContents, tbuf, sz);
-            contentSize += sz;
-            free(tbuf);
-        }
-    }
-#endif
-#if 0
-    DIR *d;
-    struct dirent *dir;
-    d = opendir(WEBROOT);
-    if (d) {
-        while ((dir = readdir(d)) != NULL) {
-            strcpy(buf, WEBROOT);
-            strcat(buf, "/");
-            strcat(buf, dir->d_name);
-            if (is_regular_file(buf)) {
-                if (WildCmp("*.js", buf)) {
-                    printf("->>>> %s\n", dir->d_name);
-                } else {
-                    printf("%s\n", dir->d_name);
-                }
-
-            } else {
-                printf("DIR: %s\n", dir->d_name);
-            }
-
-        }
-        closedir(d);
-    }
-#endif
 
     return (EXIT_SUCCESS);
 }
@@ -694,16 +618,36 @@ int parseScript(char * script, int len) {
             token = strtok(NULL, "\r\n");
             continue;
         }
+        if (strcmp(token, "[REDIRECTS]") == 0) {
+            handler = "redirects";
+            token = strtok(NULL, "\r\n");
+            continue;
+        }
         if (strcmp(handler, "files") == 0) {
-            FILES[fileCount++] = strdup(token);
+            FILES[fileCount] = malloc(strlen(token) + 2);
+            FILES[fileCount][0] = '/';
+            strcpy(&FILES[fileCount][1], token);
+            fileCount++;
             if (fileCount >= MAX_SCRIPT_LINES) {
                 printf("File lines exceed %i lines\r\n", MAX_SCRIPT_LINES);
                 return (1);
             }
         } else if (strcmp(handler, "scripts") == 0) {
-            SCRIPTS[scriptCount++] = strdup(token);
+            SCRIPTS[scriptCount] = malloc(strlen(token) + 2);
+            SCRIPTS[scriptCount][0] = '/';
+            strcpy(&SCRIPTS[scriptCount][1], token);
+            scriptCount++;
             if (scriptCount >= MAX_SCRIPT_LINES) {
                 printf("Script lines exceed %i lines\r\n", MAX_SCRIPT_LINES);
+                return (1);
+            }
+        } else if (strcmp(handler, "redirects") == 0) {
+            REDIRECTS[redirectCount] = malloc(strlen(token) + 2);
+            REDIRECTS[redirectCount][0] = '/';
+            strcpy(&REDIRECTS[redirectCount][1], token);
+            redirectCount++;
+            if (scriptCount >= MAX_SCRIPT_LINES) {
+                printf("Redirect lines exceed %i lines\r\n", MAX_SCRIPT_LINES);
                 return (1);
             }
         }
