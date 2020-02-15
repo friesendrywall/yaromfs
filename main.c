@@ -45,9 +45,11 @@ uint32_t scriptCount = 0;
 uint32_t redirectCount = 0;
 char * headerBuf = NULL;
 char * sourceBuf = NULL;
+char * datfilBuf = NULL;
 uint8_t * dataBuf = NULL;
 uint32_t headerIdx = 0;
 uint32_t sourceIdx = 0;
+uint32_t datfilIdx = 0;
 uint32_t dataIdx = 0;
 uint32_t MAX_FILE_NAME_LENGTH = 0;
 
@@ -209,6 +211,17 @@ void printSourceStart(void) {
             VERSION, INCLUDE
             );
     writeSource(buf, strlen(buf));
+}
+
+void printDataFileStart(void) {
+    char buf[4096];
+    sprintf(buf,
+            "/* Processed by yaROMFS version %s */\r\n"
+            "#include <stdint.h>\r\n"
+            "#include \"yaROMFSconfig.h\"\r\n\r\n",
+            VERSION
+            );
+    writeDataFile(buf, strlen(buf));
 }
 
 void printSourceMethods(void) {
@@ -402,9 +415,9 @@ void serializeData(void) {
     float size = dataIdx;
     size /= 1024;
     sprintf(buf, "/* yaROMFS size %.1fkb */\r\n", size);
-    writeSource(buf, strlen(buf));
+    writeDataFile(buf, strlen(buf));
     sprintf(buf, "const uint8_t _YAROMFSATTR_ yaROMFSDAT[0x%X] = {", dataIdx);
-    writeSource(buf, strlen(buf));
+    writeDataFile(buf, strlen(buf));
     for (i = 0; i < dataIdx; i += ROW_WIDTH) {
         len = sprintf(buf, "\r\n    ");
         lim = i + ROW_WIDTH > dataIdx ? dataIdx : i + ROW_WIDTH;
@@ -426,19 +439,21 @@ void serializeData(void) {
         }
         len += sprintf(&buf[len], " */");
 #endif      
-        writeSource(buf, len);
+        writeDataFile(buf, len);
 
     }
     sprintf(buf, "\r\n};");
-    writeSource(buf, strlen(buf));
+    writeDataFile(buf, strlen(buf));
 }
 
 int writeToFile(void) {
     char srcName[512] = {0};
     char hdrName[512] = {0};
+    char datName[512] = {0};
     char * old;
     FILE * headerFile = NULL;
     FILE * sourceFile = NULL;
+    FILE * datFile = NULL;
     bool writeFlag = false;
     size_t sz;
 
@@ -457,6 +472,12 @@ int writeToFile(void) {
     strcat(srcName, NAME);
     strcat(srcName, ".c");
 
+    strcpy(datName, OUTPUT_SRC);
+    strcat(datName, "/");
+    strcat(datName, NAME);
+    strcat(datName, "data");
+    strcat(datName, ".c");
+
     headerFile = fopen(hdrName, "rb");
     if (headerFile == NULL) {
         writeFlag = true;
@@ -474,10 +495,6 @@ int writeToFile(void) {
         fclose(headerFile);
     }
     if (!writeFlag) {
-        strcpy(srcName, OUTPUT_SRC);
-        strcat(srcName, "/");
-        strcat(srcName, NAME);
-        strcat(srcName, ".c");
         sourceFile = fopen(srcName, "rb");
         if (sourceFile == NULL) {
             writeFlag = true;
@@ -495,6 +512,24 @@ int writeToFile(void) {
             fclose(sourceFile);
         }
     }
+    if (!writeFlag) {
+        datFile = fopen(srcName, "rb");
+        if (datFile == NULL) {
+            writeFlag = true;
+        } else {
+            //Compare files
+            sz = fileSize(datFile);
+            old = malloc(sz);
+            fread(old, 1, sz, datFile);
+            if (sz != datfilIdx) {
+                writeFlag = true;
+            } else if (memcmp(old, datfilBuf, sz)) {
+                writeFlag = true;
+            }
+            free(old);
+            fclose(datFile);
+        }
+    }
     if (writeFlag) {
         sourceFile = fopen(srcName, "wb");
         if (sourceFile == NULL) {
@@ -503,7 +538,15 @@ int writeToFile(void) {
         }
         headerFile = fopen(hdrName, "wb");
         if (headerFile == NULL) {
+            fclose(sourceFile);
             printf("Unable to write file %s\r\n", hdrName);
+            return 1;
+        }
+        datFile = fopen(datName, "wb");
+        if (headerFile == NULL) {
+            fclose(sourceFile);
+            fclose(headerFile);
+            printf("Unable to write file %s\r\n", datName);
             return 1;
         }
         printf("Writing new files\r\n");
@@ -511,6 +554,8 @@ int writeToFile(void) {
         fclose(sourceFile);
         fwrite(headerBuf, headerIdx, 1, headerFile);
         fclose(headerFile);
+        fwrite(datfilBuf, datfilIdx, 1, datFile);
+        fclose(datFile);
     } else {
         printf("No changes detected\r\n");
     }
@@ -551,6 +596,7 @@ int main(int argc, char** argv) {
     free(buf);
     printHeaderStart();
     printSourceStart();
+    printDataFileStart();
     processScripts();
     processFiles();
     processRedirects();
@@ -703,6 +749,21 @@ int writeSource(char * data, int len) {
     }
     memcpy(&sourceBuf[sourceIdx], data, len);
     sourceIdx += len;
+}
+
+int writeDataFile(char * data, int len) {
+    static uint32_t mallocLength = 0;
+    if (datfilBuf == NULL) {
+        datfilBuf = malloc(MINIMUM_MALLOC);
+        mallocLength = MINIMUM_MALLOC;
+    } else {
+        while (datfilIdx + len >= mallocLength) {
+            datfilBuf = realloc(datfilBuf, mallocLength + MINIMUM_MALLOC);
+            mallocLength += MINIMUM_MALLOC;
+        }        
+    }
+    memcpy(&datfilBuf[datfilIdx], data, len);
+    datfilIdx += len;
 }
 
 int writeData(char* data, int len) {
