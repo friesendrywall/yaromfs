@@ -14,6 +14,7 @@
  */
 
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
@@ -24,7 +25,7 @@
 #include <stdint.h>
 #include "zlib/zlib.h"
 
-#define VERSION "1.0"
+#define VERSION "1.04"
 #define MAX_SCRIPT_SIZE 4096
 #define MAX_SCRIPT_LINES 512
 #define MINIMUM_MALLOC (1024*1024)
@@ -63,6 +64,7 @@ int parseScript(char * script, int len);
 int writeHeader(char* data, int len);
 int writeSource(char * data, int len);
 int writeData(char* data, int len);
+int writeDataFile(char * data, int len);
 uint32_t hash(unsigned char *str, unsigned char *method);
 
 typedef struct {
@@ -97,7 +99,7 @@ int zlib_deflate(unsigned char * datain, int InLen, _ZipObj * gzip) {
     int ret;
     int retval = Z_OK;
     gzip->OriginalLen = InLen;
-    gzip->UBData = malloc(InLen);
+    gzip->UBData = malloc(InLen + 1024);
     if (gzip->UBData == NULL) {
         return Z_MEM_ERROR;
     }
@@ -148,13 +150,15 @@ void printHeaderStart(void) {
             "    int32_t len;\r\n"
             "    int32_t responseCode;\r\n"
             "    uint8_t gz : 1;\r\n"
+            "    uint8_t preservePOST : 1;\r\n"
+            "    uint8_t sendFile : 1;\r\n"
             "} _httpResponse;\r\n\r\n"
             "typedef struct {\r\n"
             "    const uint8_t * contentType;\r\n"
             "    uint32_t hash;\r\n"
             "    const uint8_t * data;\r\n"
             "    uint32_t length;\r\n"
-            "    _httpResponse (*script_ptr)(uint8_t * data, uint32_t len);\r\n"
+            "    _httpResponse (*script_ptr)(uint8_t * data, uint32_t len, uint8_t * urlParams);\r\n"
             "    uint8_t method;\r\n"
             "    uint8_t gz : 1;\r\n"
             "    uint8_t redirect : 1;\r\n"
@@ -173,7 +177,8 @@ void printHeaderStart(void) {
             "uint32_t yaromfs_is_gz(YAROMFSFILE_HANDLE *handle);\r\n;"
             "const uint8_t * yaromfs_contentType(YAROMFSFILE_HANDLE *handle);\r\n"
             "uint32_t yaromfs_postExists(uint8_t *url);\r\n"
-            "uint32_t yaromfs_responseCode(YAROMFSFILE_HANDLE *handle);\r\n\r\n"
+            "uint32_t yaromfs_responseCode(YAROMFSFILE_HANDLE *handle);\r\n"
+            "uint32_t yaromfs_preservePost(YAROMFSFILE_HANDLE *handle);\r\n\r\n"
             "/* user defined scripts located in source */\r\n";
     writeHeader(data, strlen(data));
 }
@@ -259,7 +264,7 @@ void processScripts(void) {
         char * scriptSrc = strtok(NULL, " ");
         char * contentType = strtok(NULL, " ");
         char * maxLength = strtok(NULL, " ");
-        sprintf(buf, "extern _httpResponse %s(uint8_t * data, uint32_t len);\r\n", scriptSrc);
+        sprintf(buf, "extern _httpResponse %s(uint8_t * data, uint32_t len, uint8_t * urlParams);\r\n", scriptSrc);
         writeHeader(buf, strlen(buf));
         uint32_t hashValue = hash(scriptName, scriptMethod);
         lookupTable[tableLength++] = hashValue;
@@ -303,10 +308,10 @@ int32_t processFile(char * fileName, char * url) {
         writeData("\0\0\0\0", dataIdx % 4);
     }
     _ZipObj gzip;
+    uint32_t unzipped = false;
     if (zlib_deflate(fileData, sz, &gzip)) {
-        printf("zlib error\r\n");
-        free(fileData);
-        return 1;
+        printf("File %s not zippable\r\n", fileName);
+        unzipped = true;
     }
     uint32_t hashValue = hash(url, "GET");
     lookupTable[tableLength++] = hashValue;
@@ -316,16 +321,28 @@ int32_t processFile(char * fileName, char * url) {
     } else {
         contentType++;
     }
-    sprintf(buf,
-            "    { .hash = 0x%08X, .contentType = \"%s\", .data = &yaROMFSDAT[0x%X], .length = 0x%X, .gz = 1 },/* %s */\r\n",
-            hashValue, contentType, dataIdx, gzip.Len, url);
-    writeSource(buf, strlen(buf));
-    if (strlen(url) > MAX_FILE_NAME_LENGTH) {
-        MAX_FILE_NAME_LENGTH = strlen(url);
+    if (unzipped) {
+        sprintf(buf,
+                "    { .hash = 0x%08X, .contentType = \"%s\", .data = &yaROMFSDAT[0x%X], .length = 0x%X, .gz = 0 },/* %s */\r\n",
+                hashValue, contentType, dataIdx, sz, url);
+        writeSource(buf, strlen(buf));
+        if (strlen(url) > MAX_FILE_NAME_LENGTH) {
+            MAX_FILE_NAME_LENGTH = strlen(url);
+        }
+        writeData(fileData, sz);
+        free(fileData);
+    } else {
+        sprintf(buf,
+                "    { .hash = 0x%08X, .contentType = \"%s\", .data = &yaROMFSDAT[0x%X], .length = 0x%X, .gz = 1 },/* %s */\r\n",
+                hashValue, contentType, dataIdx, gzip.Len, url);
+        writeSource(buf, strlen(buf));
+        if (strlen(url) > MAX_FILE_NAME_LENGTH) {
+            MAX_FILE_NAME_LENGTH = strlen(url);
+        }
+        writeData(gzip.UBData, gzip.Len);
+        free(fileData);
+        gzip_free(&gzip);
     }
-    writeData(gzip.UBData, gzip.Len);
-    free(fileData);
-    gzip_free(&gzip);
     return 0;
 }
 
@@ -513,7 +530,7 @@ int writeToFile(void) {
         }
     }
     if (!writeFlag) {
-        datFile = fopen(srcName, "rb");
+        datFile = fopen(datName, "rb");
         if (datFile == NULL) {
             writeFlag = true;
         } else {
