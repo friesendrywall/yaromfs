@@ -13,8 +13,6 @@
         <gdb_interceptlist>
           <gdbinterceptoptions gdb_all="false" gdb_unhandled="true" gdb_unexpected="true"/>
         </gdb_interceptlist>
-        <gdb_signals>
-        </gdb_signals>
         <gdb_options>
           <DebugOptions>
           </DebugOptions>
@@ -31,8 +29,10 @@
           <runcommandpicklistitem>"${OUTPUT_PATH}" "C:\Projects\EasyMix\EM12\firmware\web"</runcommandpicklistitem>
           <runcommandpicklistitem>"${OUTPUT_PATH}" "C:\\Projects\\EasyMix\\EM12\\firmware\\web-source.txt" "C:\\Projects\\EasyMix\\EM12\\firmware\\src\\httpfiles.*" </runcommandpicklistitem>
           <runcommandpicklistitem>"${OUTPUT_PATH}" "C:\\Projects\\EasyMix\\EM12\\firmware\\web-source.txt"</runcommandpicklistitem>
+          <runcommandpicklistitem>"${OUTPUT_PATH}" "C:\\Projects\\EasyMix\\myROMFS\\myROMFS\test.txt"</runcommandpicklistitem>
+          <runcommandpicklistitem>"${OUTPUT_PATH}" "C:\\Projects\\myROMFS\\myROMFS\test.txt"</runcommandpicklistitem>
         </runcommandpicklist>
-        <runcommand>"${OUTPUT_PATH}" "C:\\Projects\\EasyMix\\EM12\\firmware\\web-source.txt"</runcommand>
+        <runcommand>"${OUTPUT_PATH}" "C:\\Projects\\myROMFS\\myROMFS\test.txt"</runcommand>
         <rundir></rundir>
         <buildfirst>true</buildfirst>
         <terminal-type>0</terminal-type>
@@ -52,8 +52,6 @@
         <gdb_interceptlist>
           <gdbinterceptoptions gdb_all="false" gdb_unhandled="true" gdb_unexpected="true"/>
         </gdb_interceptlist>
-        <gdb_signals>
-        </gdb_signals>
         <gdb_options>
           <DebugOptions>
           </DebugOptions>
