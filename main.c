@@ -33,7 +33,7 @@
 #include <stdint.h>
 #include "zlib/zlib.h"
 
-#define VERSION "1.04"
+#define VERSION "1.06"
 #define MAX_SCRIPT_SIZE 4096
 #define MAX_SCRIPT_LINES 512
 #define MINIMUM_MALLOC (1024*1024)
@@ -45,6 +45,7 @@ char * OUTPUT_HDR = NULL;
 char * INCLUDE = NULL;
 char * NAME = NULL;
 char * REDIRECTS[MAX_SCRIPT_LINES] = {0};
+char * WEBSOCKETS[MAX_SCRIPT_LINES] = {0};
 char * SCRIPTS[MAX_SCRIPT_LINES] = {0};
 char * FILES[MAX_SCRIPT_LINES] = {0};
 uint32_t lookupTable[MAX_SCRIPT_LINES * 2] = {0};
@@ -52,6 +53,7 @@ uint32_t tableLength = 0;
 uint32_t fileCount = 0;
 uint32_t scriptCount = 0;
 uint32_t redirectCount = 0;
+uint32_t websocketCount = 0;
 char * headerBuf = NULL;
 char * sourceBuf = NULL;
 char * datfilBuf = NULL;
@@ -170,6 +172,7 @@ void printHeaderStart(void) {
             "    uint8_t method;\r\n"
             "    uint8_t gz : 1;\r\n"
             "    uint8_t redirect : 1;\r\n"
+	         "    uint8_t websocket : 1;\r\n"
             "} _yaROMFSFILE;\r\n\r\n"
             "typedef struct {\r\n"
             "    const _yaROMFSFILE *file;\r\n"
@@ -351,7 +354,11 @@ int32_t processFile(char * fileName, char * url) {
         free(fileData);
         gzip_free(&gzip);
     }
-    return 0;
+	if (dataIdx % 4) {
+		//32 bit align
+		writeData("\0\0\0\0", dataIdx % 4);
+	}
+	return 0;
 }
 
 void searchDirectory(char * dirName, char * wildCard) {
@@ -430,7 +437,31 @@ void processRedirects(void) {
             MAX_FILE_NAME_LENGTH = strlen(redirectName);
         }
     }
-    writeSource("};\r\n\r\n", strlen("};\r\n\r\n"));
+    // writeSource("};\r\n\r\n", strlen("};\r\n\r\n"));
+}
+
+void processWebsockets(void) {
+    char buf[2048];
+    uint32_t i;
+
+    for (i = 0; i < websocketCount; i++) {
+        char * websocketName = strtok(WEBSOCKETS[i], " ");
+        // char * redirectTo = strtok(NULL, " ");
+        uint32_t hashValue = hash(websocketName, "GET");
+        lookupTable[tableLength++] = hashValue;
+        sprintf(buf,
+                "    { .hash = 0x%08X, .websocket = 1, .contentType = \"\" }, /* WS: %s*/\r\n"
+                , hashValue, websocketName);
+        writeSource(buf, strlen(buf));
+        if (strlen(websocketName) > MAX_FILE_NAME_LENGTH) {
+            MAX_FILE_NAME_LENGTH = strlen(websocketName);
+        }
+    }
+    // writeSource("};\r\n\r\n", strlen("};\r\n\r\n"));
+}
+
+void closeFileList(void) {
+	writeSource("};\r\n\r\n", strlen("};\r\n\r\n"));
 }
 
 void serializeData(void) {
@@ -625,6 +656,8 @@ int main(int argc, char** argv) {
     processScripts();
     processFiles();
     processRedirects();
+	 processWebsockets();
+	 closeFileList();
     printSourceMethods();
     serializeData();
     if (writeToFile()) {
@@ -693,8 +726,13 @@ int parseScript(char * script, int len) {
             handler = "redirects";
             token = strtok(NULL, "\r\n");
             continue;
-        }
-        if (strcmp(handler, "files") == 0) {
+		  }
+        if (strcmp(token, "[WEBSOCKET]") == 0) {
+				handler = "websockets";
+				token = strtok(NULL, "\r\n");
+				continue;
+			}
+		if (strcmp(handler, "files") == 0) {
             FILES[fileCount] = malloc(strlen(token) + 2);
             FILES[fileCount][0] = '/';
             strcpy(&FILES[fileCount][1], token);
@@ -719,6 +757,15 @@ int parseScript(char * script, int len) {
             redirectCount++;
             if (scriptCount >= MAX_SCRIPT_LINES) {
                 printf("Redirect lines exceed %i lines\r\n", MAX_SCRIPT_LINES);
+                return (1);
+            }
+        } else if (strcmp(handler, "websockets") == 0) {
+            WEBSOCKETS[websocketCount] = malloc(strlen(token) + 2);
+            WEBSOCKETS[websocketCount][0] = '/';
+            strcpy(&WEBSOCKETS[websocketCount][1], token);
+            websocketCount++;
+            if (scriptCount >= MAX_SCRIPT_LINES) {
+                printf("Websocket lines exceed %i lines\r\n", MAX_SCRIPT_LINES);
                 return (1);
             }
         }

@@ -1,0 +1,19 @@
+[WEBROOT]
+web
+[OUTPUT_SRC]
+src/http
+[OUTPUT_HDR]
+inc/http
+[INCLUDE]
+http/httpROMFS.h
+[NAME]
+httpROMFS
+[REDIRECTS]
+[SCRIPTS]
+api/firmware.php POST firmware_post_php json 0x10000
+api/status.php GET status_get_php json 0
+[FILES]
+*.html
+*.css
+*.ico
+*.png
