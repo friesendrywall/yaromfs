@@ -33,7 +33,7 @@
 #include <stdint.h>
 #include "zlib/zlib.h"
 
-#define VERSION "1.06"
+#define VERSION "1.07"
 #define MAX_SCRIPT_SIZE 4096
 #define MAX_SCRIPT_LINES 512
 #define MINIMUM_MALLOC (1024*1024)
@@ -162,6 +162,11 @@ void printHeaderStart(void) {
             "    uint8_t gz : 1;\r\n"
             "    uint8_t preservePOST : 1;\r\n"
             "    uint8_t sendFile : 1;\r\n"
+				"    uint8_t chunked : 1;\r\n"
+				"    uint8_t lastChunk : 1;\r\n"
+				"    #ifdef YAROMFS_CUSTOM_PARAM\r\n"
+				"    YAROMFS_CUSTOM_PARAM;\r\n"
+				"    #endif\r\n"
             "} _httpResponse;\r\n\r\n"
             "typedef struct {\r\n"
             "    const uint8_t * contentType;\r\n"
@@ -185,7 +190,9 @@ void printHeaderStart(void) {
             "uint32_t yaromfs_f_length(YAROMFSFILE_HANDLE *handle);\r\n"
             "void yaromfs_fclose(YAROMFSFILE_HANDLE *handle);\r\n"
             "const uint8_t * yaromfs_redirect(YAROMFSFILE_HANDLE *handle);\r\n"
-            "uint32_t yaromfs_is_gz(YAROMFSFILE_HANDLE *handle);\r\n;"
+            "uint32_t yaromfs_is_gz(YAROMFSFILE_HANDLE *handle);\r\n"
+				"uint32_t yaromfs_is_chunked(YAROMFSFILE_HANDLE *handle);\r\n"
+				"uint32_t yaromfs_lastChunk(YAROMFSFILE_HANDLE *handle);\r\n"
             "const uint8_t * yaromfs_contentType(YAROMFSFILE_HANDLE *handle);\r\n"
             "uint32_t yaromfs_postExists(uint8_t *url);\r\n"
             "uint32_t yaromfs_responseCode(YAROMFSFILE_HANDLE *handle);\r\n"
